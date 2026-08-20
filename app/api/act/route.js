@@ -70,12 +70,13 @@ export async function POST(req) {
         await setLabels(issue.id, allIds, ["buddy-edited"]);
       }
 
-      const t = await triggerRoutine();
+            const t = await triggerRoutine();
+      // Gmail is draft-only for now, so say so rather than implying it was sent.
       return Response.json({
         ok: true,
         message: t.triggered
-          ? "Recorded. Routine 2 is running now — refresh in a few seconds."
-          : "Recorded. Routine 2 will carry it out on its next run.",
+          ? "Recorded. Routine 2 is running now. Emails are drafted in Gmail for you to send; Slack and Linear actions go out directly."
+          : "Recorded. Routine 2 picks it up within the hour. Emails are drafted in Gmail for you to send; Slack and Linear actions go out directly.",
       });
     }
 
