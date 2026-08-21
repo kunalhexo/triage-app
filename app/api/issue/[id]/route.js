@@ -5,7 +5,16 @@ export const dynamic = "force-dynamic";
 /* The routines write comments in fixed formats (see the Contract page in
    Notion). Parsing them is plain string work, done here on the server. */
 function parse(issue) {
-  const out = { context: "", score: null, breakdown: null, options: [], draft: null, draftAt: null, feedback: [] };
+  const out = {
+    context: "",
+    score: null,
+    breakdown: null,
+    options: [],
+    draft: null,
+    draftAt: null,
+    feedback: [],
+    thread: [], // the ASK / ANSWER conversation, oldest first
+  };
   if (!issue) return out;
 
   for (const c of issue.comments) {
@@ -42,9 +51,36 @@ function parse(issue) {
     if (/^FEEDBACK:/i.test(b)) {
       out.feedback.push({ body: b.replace(/^FEEDBACK:\s*/i, ""), at: c.createdAt });
     }
+
+    if (/^ASK:/i.test(b)) {
+      out.thread.push({ role: "you", body: b.replace(/^ASK:\s*/i, "").trim(), at: c.createdAt });
+    }
+
+    if (/^ANSWER:/i.test(b)) {
+      // SOURCES is an optional trailing block listing where the answer came from.
+      const whole = b.replace(/^ANSWER:\s*/i, "").trim();
+      const cut = whole.search(/^SOURCES\s*$/im);
+      out.thread.push({
+        role: "buddy",
+        body: cut > -1 ? whole.slice(0, cut).trim() : whole,
+        sources:
+          cut > -1
+            ? whole
+                .slice(cut)
+                .replace(/^SOURCES\s*/im, "")
+                .split("\n")
+                .map((l) => l.replace(/^[-*]\s*/, "").trim())
+                .filter(Boolean)
+            : [],
+        at: c.createdAt,
+      });
+    }
   }
 
   if (!out.context) out.context = (issue.description || "").slice(0, 600);
+  out.thread.sort((a, b2) => new Date(a.at) - new Date(b2.at));
+  // A question with no answer after it means Routine 5 is still working.
+  out.awaitingAnswer = out.thread.length > 0 && out.thread[out.thread.length - 1].role === "you";
   out.stale = out.draftAt ? Date.now() - new Date(out.draftAt).getTime() > 48 * 3600 * 1000 : false;
   return out;
 }

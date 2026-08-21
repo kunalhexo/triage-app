@@ -70,7 +70,7 @@ export async function POST(req) {
         await setLabels(issue.id, allIds, ["buddy-edited"]);
       }
 
-            const t = await triggerRoutine();
+      const t = await triggerRoutine();
       // Gmail is draft-only for now, so say so rather than implying it was sent.
       return Response.json({
         ok: true,
