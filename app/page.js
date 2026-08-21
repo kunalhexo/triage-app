@@ -112,6 +112,9 @@ export default function Page() {
   const [note, setNote] = useState("");
   const [question, setQuestion] = useState("");
   const [asking, setAsking] = useState(false);
+  // An option he has clicked but not yet confirmed. The second step lives
+  // under it, so the wording being edited is tied to the choice being made.
+  const [pending, setPending] = useState(null);
   // Which ticket is open right now. Async work started for one ticket must
   // never write its result into another — switching cards mid-poll is normal.
   const openId = useRef(null);
@@ -142,6 +145,7 @@ export default function Page() {
     setNote("");
     setQuestion("");
     setAsking(false);
+    setPending(null);
     if (!sel) return;
     const id = sel.id;
     fetch(`/api/issue/${id}`)
@@ -436,28 +440,76 @@ export default function Page() {
 
                   {tab !== "proposals" && tab !== "drops" && tab !== "unsure" && p?.options?.length > 0 && (
                     <div style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 5 }}>
-                      {p.options.map((o) => (
-                        <button
-                          key={o.n}
-                          disabled={busy}
-                          onClick={() => act("choose", { n: o.n, draft: edited ? draft : null, text: note })}
-                          style={{ ...btn("transparent", o.manual ? MUTE : PAPER, `1px solid ${INK_3}`), textAlign: "left", fontWeight: 400, padding: "9px 12px", fontSize: 13 }}
-                        >
-                          <span style={{ color: accent, fontWeight: 700, marginRight: 8 }}>{o.n}</span>
-                          {o.text}
-                          {o.manual && <span style={{ fontSize: 9, letterSpacing: ".1em", marginLeft: 8, color: SIGNAL }}>YOU DO THIS</span>}
-                        </button>
-                      ))}
-                    </div>
-                  )}
+                      {p.options.map((o) => {
+                        const open = pending?.n === o.n;
+                        return (
+                          <div key={o.n}>
+                            <button
+                              disabled={busy}
+                              onClick={() => {
+                                setPending(open ? null : o);
+                                setDraft(p.draft || "");
+                              }}
+                              style={{
+                                ...btn(open ? INK_3 : "transparent", o.manual ? MUTE : PAPER, `1px solid ${open ? accent : INK_3}`),
+                                textAlign: "left",
+                                fontWeight: 400,
+                                padding: "9px 12px",
+                                fontSize: 13,
+                                width: "100%",
+                              }}
+                            >
+                              <span style={{ color: accent, fontWeight: 700, marginRight: 8 }}>{o.n}</span>
+                              {o.text}
+                              {o.manual && <span style={{ fontSize: 9, letterSpacing: ".1em", marginLeft: 8, color: SIGNAL }}>YOU DO THIS</span>}
+                            </button>
 
-                  {p?.draft && (
-                    <div style={{ marginTop: 14 }}>
-                      <div style={{ fontSize: 9, letterSpacing: ".12em", color: MUTE, fontWeight: 700, marginBottom: 6 }}>
-                        DRAFT {edited && <span style={{ color: SIGNAL }}>· EDITED</span>}
-                        {p.stale && <span style={{ color: ALERT }}> · OVER 48H OLD</span>}
-                      </div>
-                      <textarea value={draft} onChange={(e) => setDraft(e.target.value)} rows={5} style={box} />
+                            {open && (
+                              <div style={{ border: `1px solid ${accent}`, borderTop: "none", borderRadius: "0 0 3px 3px", padding: "12px 13px", background: INK }}>
+                                {o.manual ? (
+                                  <p style={{ margin: "0 0 10px", fontSize: 12.5, color: MUTE, lineHeight: 1.55 }}>
+                                    This one is yours to do. Confirming records the choice and closes the
+                                    card — it does not do anything on your behalf.
+                                  </p>
+                                ) : p.draft ? (
+                                  <>
+                                    <div style={{ fontSize: 9, letterSpacing: ".12em", color: MUTE, fontWeight: 700, marginBottom: 6 }}>
+                                      WORDING {edited && <span style={{ color: SIGNAL }}>· EDITED</span>}
+                                      {p.stale && <span style={{ color: ALERT }}> · OVER 48H OLD</span>}
+                                    </div>
+                                    <textarea value={draft} onChange={(e) => setDraft(e.target.value)} rows={5} style={box} />
+                                    <p style={{ margin: "7px 0 10px", fontSize: 11.5, color: MUTE, lineHeight: 1.5 }}>
+                                      Emails are prepared as Gmail drafts for you to send. Slack and Linear
+                                      actions go out directly.
+                                    </p>
+                                  </>
+                                ) : (
+                                  <p style={{ margin: "0 0 10px", fontSize: 12.5, color: MUTE, lineHeight: 1.55 }}>
+                                    Nothing to write for this one.
+                                  </p>
+                                )}
+
+                                <div style={{ display: "flex", gap: 6 }}>
+                                  <button
+                                    disabled={busy}
+                                    onClick={() => {
+                                      const payload = { n: o.n, draft: edited ? draft : null, text: note };
+                                      setPending(null);
+                                      act("choose", payload);
+                                    }}
+                                    style={btn(LIVE, INK)}
+                                  >
+                                    {busy ? "Working…" : o.manual ? "Mark done" : p.draft ? "Confirm and prepare" : "Confirm"}
+                                  </button>
+                                  <button disabled={busy} onClick={() => setPending(null)} style={btn("transparent", MUTE, `1px solid ${INK_3}`)}>
+                                    Cancel
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
 
@@ -467,12 +519,26 @@ export default function Page() {
                       value={note}
                       onChange={(e) => setNote(e.target.value)}
                       rows={2}
-                      placeholder="Why this is wrong, what you'd rather it did, or anything else. Plain words."
+                      placeholder="Why this is wrong, or what you'd rather it did. This teaches the system — it does not send anything."
                       style={box}
                     />
+                    {/^\s*(reply|send|say|tell)\b/i.test(note) && (
+                      <p style={{ fontSize: 11.5, color: SIGNAL, lineHeight: 1.5, margin: "7px 0 0" }}>
+                        This looks like wording you want sent. Notes teach the system, they do not
+                        send. To send it, edit the DRAFT above and press an option.
+                      </p>
+                    )}
                     {note.trim() && (
-                      <button disabled={busy} onClick={() => act("note", { text: note })} style={{ ...btn(SIGNAL, INK), marginTop: 7, fontWeight: 700 }}>
-                        Save note
+                      <button
+                        disabled={busy}
+                        onClick={() => {
+                          const text = note.trim();
+                          setNote(""); // clear first, so a second click has nothing to send
+                          act("note", { text });
+                        }}
+                        style={{ ...btn(SIGNAL, INK), marginTop: 7, fontWeight: 700, opacity: busy ? 0.5 : 1 }}
+                      >
+                        {busy ? "Saving…" : "Save note"}
                       </button>
                     )}
                   </div>
