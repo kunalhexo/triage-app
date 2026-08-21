@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 const INK = "#101822";
 const INK_2 = "#18222F";
@@ -110,6 +110,11 @@ export default function Page() {
   const [msg, setMsg] = useState(null);
   const [draft, setDraft] = useState("");
   const [note, setNote] = useState("");
+  const [question, setQuestion] = useState("");
+  const [asking, setAsking] = useState(false);
+  // Which ticket is open right now. Async work started for one ticket must
+  // never write its result into another — switching cards mid-poll is normal.
+  const openId = useRef(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -131,17 +136,24 @@ export default function Page() {
   }, [load]);
 
   useEffect(() => {
-    if (!sel) return setDetail(null);
+    openId.current = sel?.id || null;
     setDetail(null);
     setMsg(null);
     setNote("");
-    fetch(`/api/issue/${sel.id}`)
+    setQuestion("");
+    setAsking(false);
+    if (!sel) return;
+    const id = sel.id;
+    fetch(`/api/issue/${id}`)
       .then((r) => r.json())
       .then((d) => {
+        if (openId.current !== id) return; // he moved on
         setDetail(d);
         setDraft(d.parsed?.draft || "");
       })
-      .catch((e) => setDetail({ error: e.message }));
+      .catch((e) => {
+        if (openId.current === id) setDetail({ error: e.message });
+      });
   }, [sel?.id]);
 
   const inTab = issues
@@ -163,17 +175,58 @@ export default function Page() {
       setNote("");
       load();
       // Re-read the open issue so labels and comments on screen match Linear.
-      fetch(`/api/issue/${sel.id}`)
-        .then((r) => r.json())
-        .then((fresh) => {
-          setDetail(fresh);
-          setDraft(fresh.parsed?.draft || "");
-        })
-        .catch(() => {});
+      refreshDetail(sel.id).catch(() => {});
     } catch (e) {
       setMsg({ ok: false, text: `${e.message}. Nothing was changed.` });
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function refreshDetail(id) {
+    const r = await fetch(`/api/issue/${id}`);
+    const fresh = await r.json();
+    if (openId.current !== id) return null; // a different card is open now
+    setDetail(fresh);
+    setDraft(fresh.parsed?.draft || "");
+    return fresh;
+  }
+
+  /* Questions are answered by Routine 5, not by this app, so after asking we
+     poll the ticket until the ANSWER comment appears. Up to two minutes,
+     then we stop and tell the truth rather than spinning forever. */
+  async function ask(q) {
+    const id = sel.id;
+    setAsking(true);
+    setMsg(null);
+    try {
+      const r = await fetch("/api/ask", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, question: q }),
+      });
+      const d = await r.json();
+      if (d.error) throw new Error(d.error);
+      setQuestion("");
+      await refreshDetail(id);
+
+      if (!d.pending) {
+        if (openId.current === id) setMsg({ ok: true, text: d.message });
+        return;
+      }
+
+      for (let i = 0; i < 30; i++) {
+        await new Promise((res) => setTimeout(res, 4000));
+        if (openId.current !== id) return; // he moved on; stop quietly
+        const fresh = await refreshDetail(id);
+        if (fresh && !fresh.parsed?.awaitingAnswer) return;
+      }
+      if (openId.current === id)
+        setMsg({ ok: true, text: "Still working. The answer appears on this card when it lands." });
+    } catch (e) {
+      if (openId.current === id) setMsg({ ok: false, text: e.message });
+    } finally {
+      if (openId.current === id) setAsking(false);
     }
   }
 
@@ -292,6 +345,68 @@ export default function Page() {
                   {p?.context && (
                     <p style={{ margin: "14px 0 0", fontSize: 13, lineHeight: 1.6, color: "#B9C6D2", whiteSpace: "pre-wrap" }}>{p.context}</p>
                   )}
+
+                  {/* Tell me more — answered by Routine 5, which has the tool
+                      access this app does not. */}
+                  <div style={{ marginTop: 16 }}>
+                    {p?.thread?.length > 0 && (
+                      <div style={{ marginBottom: 12 }}>
+                        {p.thread.map((t, k) => (
+                          <div key={k} style={{ marginBottom: 10 }}>
+                            <div style={{ fontSize: 9, letterSpacing: ".12em", color: t.role === "you" ? SIGNAL : COOL, fontWeight: 700, marginBottom: 4 }}>
+                              {t.role === "you" ? "YOU ASKED" : "ANSWER"}
+                            </div>
+                            <p style={{ margin: 0, fontSize: 13, lineHeight: 1.6, color: t.role === "you" ? MUTE : PAPER, whiteSpace: "pre-wrap" }}>
+                              {t.body || "What is this about, and does it matter to me?"}
+                            </p>
+                            {t.sources?.length > 0 && (
+                              <details style={{ marginTop: 6 }}>
+                                <summary style={{ cursor: "pointer", color: MUTE, fontSize: 11 }}>
+                                  Where this came from ({t.sources.length})
+                                </summary>
+                                <ul style={{ margin: "6px 0 0", paddingLeft: 18, color: MUTE, fontSize: 11.5, lineHeight: 1.6 }}>
+                                  {t.sources.map((sc, j) => (
+                                    <li key={j}>{sc}</li>
+                                  ))}
+                                </ul>
+                              </details>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {asking && (
+                      <p style={{ fontSize: 12.5, color: COOL, margin: "0 0 10px" }}>Looking into it…</p>
+                    )}
+
+                    {!p?.thread?.length && !asking && (
+                      <button onClick={() => ask("")} style={btn("transparent", COOL, `1px solid ${COOL}`)}>
+                        Tell me more
+                      </button>
+                    )}
+
+                    {p?.thread?.length > 0 && !asking && (
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <input
+                          value={question}
+                          onChange={(e) => setQuestion(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && question.trim()) ask(question);
+                          }}
+                          placeholder="Ask a follow-up…"
+                          style={{ ...box, flex: 1, padding: "8px 10px" }}
+                        />
+                        <button
+                          disabled={!question.trim()}
+                          onClick={() => ask(question)}
+                          style={btn("transparent", question.trim() ? COOL : INK_3, `1px solid ${question.trim() ? COOL : INK_3}`)}
+                        >
+                          Ask
+                        </button>
+                      </div>
+                    )}
+                  </div>
 
                   {tab === "proposals" && (
                     <div style={{ display: "flex", gap: 6, marginTop: 16 }}>
