@@ -80,6 +80,25 @@ export async function POST(req) {
       });
     }
 
+    if (action === "handled") {
+      // The missing affordance. Kunal has dealt with this outside the system —
+      // replied in Gmail, spoke to the person, decided it is moot. Without this
+      // he says so in a note, nothing acts, and the ticket sits forever.
+      await addComment(
+        issue.id,
+        `FEEDBACK: Already handled outside the system.${payload?.text ? `\n\n${payload.text}` : ""}`
+      );
+      const keepHandled = issue.labels
+        .filter((name) => name !== "buddy-awaiting")
+        .map((name) => issue.labelIds[name]);
+      await setLabels(issue.id, keepHandled, ["buddy-done"]);
+      await setState(issue.id, "In Review");
+      return Response.json({
+        ok: true,
+        message: "Cleared. Routine 4 will look at why it surfaced.",
+      });
+    }
+
     if (action === "proposal") {
       const approve = payload.approve;
       await addComment(
@@ -88,12 +107,16 @@ export async function POST(req) {
           ? `FEEDBACK: Approved — promote this category and make it silent.${payload.text ? `\n\n${payload.text}` : ""}`
           : `FEEDBACK: Declined for now. Keep showing these and reset the counter.${payload.text ? `\n\n${payload.text}` : ""}`
       );
-      // Drop buddy-awaiting so Routine 2 never tries to execute a proposal,
-      // but keep buddy-proposal so Routine 4 can still find it tonight.
-      const keepForProposal = issue.labels
+      // Drop buddy-awaiting so Routine 2 never tries to execute a proposal.
+      // Add buddy-done so it actually leaves the Proposals tab once decided —
+      // "done" here means the PROPOSAL was decided, either way, not that it
+      // was approved. Keep buddy-proposal too, so Routine 4 can still find
+      // it tonight; tabOf() checks buddy-done first, so the two labels
+      // coexisting is fine and no longer causes it to stick in Proposals.
+      const resolved = issue.labels
         .filter((name) => name !== "buddy-awaiting")
         .map((name) => issue.labelIds[name]);
-      await setLabels(issue.id, keepForProposal, []);
+      await setLabels(issue.id, resolved, ["buddy-done"]);
       await setState(issue.id, "In Review");
       return Response.json({
         ok: true,
