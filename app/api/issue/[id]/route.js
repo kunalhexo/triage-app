@@ -1,14 +1,18 @@
 import { getIssue } from "../../../../lib/linear";
+import { sections, oldestFirst } from "../../../../lib/comments";
 
 export const dynamic = "force-dynamic";
 
 /* The routines write comments in fixed formats (see the Contract page in
-   Notion). Parsing them is plain string work, done here on the server. */
+   Notion). Parsing them is plain string work, done here on the server.
+   The marker-splitting itself lives in lib/comments.js, shared with the
+   list route, so the two cannot drift out of sync with each other again. */
 function parse(issue) {
   const out = {
     context: "",
     score: null,
     breakdown: null,
+    rank: null,
     options: [],
     draft: null,
     draftAt: null,
@@ -17,29 +21,7 @@ function parse(issue) {
   };
   if (!issue) return out;
 
-  /* The routines sometimes write CONTEXT, SCORE, OPTIONS and DRAFT as four
-     separate comments, and sometimes as one comment containing all four.
-     Both are valid, so split every comment on the markers and handle the
-     pieces the same way either way. */
-  const MARKER = /^(CONTEXT|SCORE:|OPTIONS|DRAFT|EVIDENCE|FEEDBACK:|ASK:|ANSWER:)/im;
-
-  function sections(body) {
-    const lines = (body || "").split("\n");
-    const out = [];
-    let cur = null;
-    for (const line of lines) {
-      if (MARKER.test(line.trim())) {
-        if (cur) out.push(cur);
-        cur = { head: line.trim(), lines: [line] };
-      } else if (cur) {
-        cur.lines.push(line);
-      }
-    }
-    if (cur) out.push(cur);
-    return out.map((sec) => sec.lines.join("\n").trim());
-  }
-
-  for (const c of issue.comments) {
+  for (const c of oldestFirst(issue.comments)) {
     for (const b of sections(c.body)) {
       if (/^CONTEXT/i.test(b)) {
         out.context = b.replace(/^CONTEXT\s*\|?\s*/i, "").trim();
@@ -53,6 +35,18 @@ function parse(issue) {
           bd[m[1].toLowerCase()] = parseInt(m[2], 10);
         }
         out.breakdown = Object.keys(bd).length ? bd : null;
+      }
+
+      // RANK: 2 of 7 in Urgent - <reason>. Written by Routine 6, never by
+      // 1B, so this is layered on top of — and never overwrites — the score.
+      const rank = b.match(/^RANK:\s*(\d+)\s*of\s*(\d+)\s*in\s*(\w+)\s*-?\s*(.*)/im);
+      if (rank) {
+        out.rank = {
+          position: parseInt(rank[1], 10),
+          of: parseInt(rank[2], 10),
+          band: rank[3],
+          reason: rank[4]?.trim() || "",
+        };
       }
 
       if (/^OPTIONS/i.test(b)) {
