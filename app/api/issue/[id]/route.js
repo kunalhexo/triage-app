@@ -27,25 +27,28 @@ function parse(issue) {
         out.context = b.replace(/^CONTEXT\s*\|?\s*/i, "").trim();
       }
 
-      const score = b.match(/^SCORE:\s*(\d+)\s*-\s*(.+)/im);
+      const score = b.match(/^SCORE\[([\w-]+)\]:\s*(\d+)\s*-\s*(.+)/im);
       if (score) {
-        out.score = parseInt(score[1], 10);
+        out.score = parseInt(score[2], 10);
         const bd = {};
-        for (const m of score[2].matchAll(/(delay|waiting|blocking|committed|effort)\s*(\d+)\s*x/gi)) {
+        for (const m of score[3].matchAll(/(delay|waiting|blocking|committed|effort)\s*(\d+)\s*x/gi)) {
           bd[m[1].toLowerCase()] = parseInt(m[2], 10);
         }
         out.breakdown = Object.keys(bd).length ? bd : null;
       }
 
-      // RANK: 2 of 7 in Urgent - <reason>. Written by Routine 6, never by
-      // 1B, so this is layered on top of — and never overwrites — the score.
-      const rank = b.match(/^RANK:\s*(\d+)\s*of\s*(\d+)\s*in\s*(\w+)\s*-?\s*(.*)/im);
+      // RANK[listwise]: 2 of 7 in Urgent - <reason>. Written by Routine 6,
+      // never by 1B, so this is layered on top of — and never overwrites —
+      // the score. The bracketed name is the ranking system; today there is
+      // only one (listwise), but the parser doesn't assume that stays true.
+      const rank = b.match(/^RANK\[([\w-]+)\]:\s*(\d+)\s*of\s*(\d+)\s*in\s*(\w+)\s*-?\s*(.*)/im);
       if (rank) {
         out.rank = {
-          position: parseInt(rank[1], 10),
-          of: parseInt(rank[2], 10),
-          band: rank[3],
-          reason: rank[4]?.trim() || "",
+          system: rank[1],
+          position: parseInt(rank[2], 10),
+          of: parseInt(rank[3], 10),
+          band: rank[4],
+          reason: rank[5]?.trim() || "",
         };
       }
 
