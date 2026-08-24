@@ -38,15 +38,11 @@ const BUCKETS = [
 
 function tabOf(labels = []) {
   const has = (l) => labels.includes(l);
-  // buddy-done is terminal and checked first, deliberately. A resolved
-  // proposal (buddy-proposal + buddy-done) or a closed drop must not keep
-  // showing in its original tab forever just because that label was never
-  // stripped. Whatever else a ticket carries, "done" wins.
-  if (has("buddy-done")) return "done";
   if (has("buddy-proposal")) return "proposals";
   if (has("buddy-unsure")) return "unsure";
   if (has("buddy-proposed-drop")) return "drops";
   if (has("buddy-parked")) return "parked";
+  if (has("buddy-done")) return "done";
   if (has("for-me") || has("delegate") || has("autonomous")) return "queue";
   return null;
 }
@@ -119,8 +115,6 @@ export default function Page() {
   // An option he has clicked but not yet confirmed. The second step lives
   // under it, so the wording being edited is tied to the choice being made.
   const [pending, setPending] = useState(null);
-  // Set when ?team= is present — a sandbox view, not the real queue.
-  const [viewingTeam, setViewingTeam] = useState(null);
   // Which ticket is open right now. Async work started for one ticket must
   // never write its result into another — switching cards mid-poll is normal.
   const openId = useRef(null);
@@ -129,12 +123,10 @@ export default function Page() {
     setLoading(true);
     setListErr(null);
     try {
-      const team = new URLSearchParams(window.location.search).get("team");
-      const r = await fetch(team ? `/api/issues?team=${encodeURIComponent(team)}` : "/api/issues");
+      const r = await fetch("/api/issues");
       const d = await r.json();
       if (d.error) throw new Error(d.error);
       setIssues(d.issues);
-      setViewingTeam(d.team);
     } catch (e) {
       setListErr(e.message);
     } finally {
@@ -168,20 +160,9 @@ export default function Page() {
       });
   }, [sel?.id]);
 
-  /* Within a priority band: ranked tickets sort by their explicit position
-     (Routine 6's judgment, tickets against each other). Anything not yet
-     ranked falls back to newest-first, same as before Routine 6 existed, and
-     sorts after any ranked tickets — an explicit judgment beats a guess. */
   const inTab = issues
     .filter((i) => tabOf(i.labels) === tab)
-    .sort((a, b) => {
-      const band = (a.priority || 9) - (b.priority || 9);
-      if (band !== 0) return band;
-      if (a.rank && b.rank) return a.rank.position - b.rank.position;
-      if (a.rank && !b.rank) return -1;
-      if (!a.rank && b.rank) return 1;
-      return new Date(b.createdAt) - new Date(a.createdAt);
-    });
+    .sort((a, b) => (a.priority || 9) - (b.priority || 9) || new Date(b.createdAt) - new Date(a.createdAt));
 
   async function act(action, payload) {
     setBusy(true);
@@ -269,23 +250,6 @@ export default function Page() {
           </button>
         </header>
 
-        {viewingTeam && (
-          <div
-            style={{
-              padding: "8px 13px",
-              marginBottom: 14,
-              borderRadius: 4,
-              background: "rgba(242,160,61,.1)",
-              border: `1px solid ${SIGNAL}`,
-              color: SIGNAL,
-              fontSize: 12.5,
-              fontWeight: 600,
-            }}
-          >
-            SANDBOX — viewing team "{viewingTeam}", not your real queue. Remove ?team= from the URL to go back.
-          </div>
-        )}
-
         <nav style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
           {TABS.map((t) => {
             const n = issues.filter((i) => tabOf(i.labels) === t.id).length;
@@ -351,21 +315,6 @@ export default function Page() {
                   }}
                 >
                   <span style={{ fontSize: 9.5, letterSpacing: ".1em", color: MUTE, fontWeight: 700 }}>{i.key}</span>
-                  {i.rank && (
-                    <span
-                      style={{
-                        fontSize: 9,
-                        letterSpacing: ".05em",
-                        color: SIGNAL,
-                        border: `1px solid ${SIGNAL}`,
-                        borderRadius: 2,
-                        padding: "1px 5px",
-                        marginLeft: 6,
-                      }}
-                    >
-                      {i.rank.position}/{i.rank.of}
-                    </span>
-                  )}
                   <div style={{ fontSize: 13, lineHeight: 1.4, marginTop: 4 }}>{i.title}</div>
                 </button>
               );
@@ -396,15 +345,6 @@ export default function Page() {
                   </div>
 
                   <Spine breakdown={p?.breakdown} total={p?.score} />
-
-                  {p?.rank && (
-                    <p style={{ margin: "8px 0 0", fontSize: 12, color: MUTE, lineHeight: 1.5 }}>
-                      <span style={{ color: SIGNAL, fontWeight: 700 }}>
-                        {p.rank.position} of {p.rank.of} in {p.rank.band}
-                      </span>
-                      {p.rank.reason ? ` — ${p.rank.reason}` : ""}
-                    </p>
-                  )}
 
                   {p?.context && (
                     <p style={{ margin: "14px 0 0", fontSize: 13, lineHeight: 1.6, color: "#B9C6D2", whiteSpace: "pre-wrap" }}>{p.context}</p>
@@ -443,25 +383,6 @@ export default function Page() {
                     {asking && (
                       <p style={{ fontSize: 12.5, color: COOL, margin: "0 0 10px" }}>Looking into it…</p>
                     )}
-
-                    {/* A question with no answer after a few minutes means the
-                        explain routine dropped it. Say so and offer a retry
-                        rather than leaving it silently unanswered. */}
-                    {!asking &&
-                      p?.awaitingAnswer &&
-                      Date.now() - new Date(p.thread[p.thread.length - 1].at).getTime() > 5 * 60 * 1000 && (
-                        <div style={{ marginBottom: 10 }}>
-                          <p style={{ fontSize: 12.5, color: ALERT, margin: "0 0 6px" }}>
-                            That question never got answered.
-                          </p>
-                          <button
-                            onClick={() => ask(p.thread[p.thread.length - 1].body)}
-                            style={btn("transparent", COOL, `1px solid ${COOL}`)}
-                          >
-                            Ask again
-                          </button>
-                        </div>
-                      )}
 
                     {!p?.thread?.length && !asking && (
                       <button onClick={() => ask("")} style={btn("transparent", COOL, `1px solid ${COOL}`)}>
