@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 
 const INK = "#101822";
 const INK_2 = "#18222F";
@@ -49,6 +49,51 @@ function tabOf(labels = []) {
   if (has("buddy-parked")) return "parked";
   if (has("for-me") || has("delegate") || has("autonomous")) return "queue";
   return null;
+}
+
+/* Discovers which scoring/ranking systems actually appear in the loaded
+   tickets, rather than assuming a fixed set. A future second scorer or
+   ranker starts showing up here automatically the moment it writes its
+   first tagged comment — no UI change needed. "Newest first" always exists,
+   even before any system has ever scored anything. */
+function discoverLenses(issues) {
+  const rankSystems = new Set();
+  const scoreSystems = new Set();
+  for (const i of issues) {
+    if (i.ranks) Object.keys(i.ranks).forEach((s) => rankSystems.add(s));
+    if (i.scores) Object.keys(i.scores).forEach((s) => scoreSystems.add(s));
+  }
+  const lenses = [];
+  for (const s of rankSystems) lenses.push({ id: `rank:${s}`, label: `Ranking (${s})`, type: "rank", system: s });
+  for (const s of scoreSystems) lenses.push({ id: `score:${s}`, label: `Score (${s})`, type: "score", system: s });
+  lenses.push({ id: "recency", label: "Newest first", type: "recency" });
+  return lenses;
+}
+
+/* Within-band tiebreak only — band itself is always the outer sort and this
+   function never touches it. A ticket the chosen lens has no data for falls
+   after ones it does have data for; an explicit judgment beats a guess. */
+function compareByLens(a, b, lens) {
+  if (!lens || lens.type === "recency") {
+    return new Date(b.createdAt) - new Date(a.createdAt);
+  }
+  if (lens.type === "rank") {
+    const ar = a.ranks?.[lens.system];
+    const br = b.ranks?.[lens.system];
+    if (ar && br) return ar.position - br.position;
+    if (ar && !br) return -1;
+    if (!ar && br) return 1;
+    return new Date(b.createdAt) - new Date(a.createdAt);
+  }
+  if (lens.type === "score") {
+    const as = a.scores?.[lens.system]?.total;
+    const bs = b.scores?.[lens.system]?.total;
+    if (as != null && bs != null) return bs - as;
+    if (as != null && bs == null) return -1;
+    if (as == null && bs != null) return 1;
+    return new Date(b.createdAt) - new Date(a.createdAt);
+  }
+  return 0;
 }
 
 const btn = (bg, fg, border) => ({
@@ -119,8 +164,6 @@ export default function Page() {
   // An option he has clicked but not yet confirmed. The second step lives
   // under it, so the wording being edited is tied to the choice being made.
   const [pending, setPending] = useState(null);
-  // Set when ?team= is present — a sandbox view, not the real queue.
-  const [viewingTeam, setViewingTeam] = useState(null);
   // Which ticket is open right now. Async work started for one ticket must
   // never write its result into another — switching cards mid-poll is normal.
   const openId = useRef(null);
@@ -129,12 +172,10 @@ export default function Page() {
     setLoading(true);
     setListErr(null);
     try {
-      const team = new URLSearchParams(window.location.search).get("team");
-      const r = await fetch(team ? `/api/issues?team=${encodeURIComponent(team)}` : "/api/issues");
+      const r = await fetch("/api/issues");
       const d = await r.json();
       if (d.error) throw new Error(d.error);
       setIssues(d.issues);
-      setViewingTeam(d.team);
     } catch (e) {
       setListErr(e.message);
     } finally {
@@ -168,19 +209,44 @@ export default function Page() {
       });
   }, [sel?.id]);
 
-  /* Within a priority band: ranked tickets sort by their explicit position
-     (Routine 6's judgment, tickets against each other). Anything not yet
-     ranked falls back to newest-first, same as before Routine 6 existed, and
-     sorts after any ranked tickets — an explicit judgment beats a guess. */
+  /* The lens selector — which system's output decides within-band order.
+     Band is never part of this choice; it stays the fixed outer sort no
+     matter what, because that is the layer that makes the queue predictable
+     (Urgent always above High). The lens only changes how ties within a band
+     are broken: by Routine 6's relative judgment, by 1B's raw weighted total,
+     or by plain recency if neither exists yet.
+
+     Options are discovered from the actual loaded data, not hardcoded, so a
+     future second scoring or ranking system needs no UI change here — it
+     just starts appearing as another option once it starts writing tagged
+     comments. */
+  const lenses = useMemo(() => discoverLenses(issues), [issues]);
+  // Fixed initial value, never read from localStorage here — this page can
+  // be statically prerendered at build time, when window does not exist.
+  // Reading localStorage inside a useState initializer would make the
+  // server-rendered HTML and the client's first paint disagree, which React
+  // treats as a hydration error. Syncing after mount, in the effect below,
+  // is the safe pattern for browser-only state in a page that isn't forced
+  // dynamic.
+  const [lensId, setLensId] = useState(null);
+  useEffect(() => {
+    const saved = window.localStorage.getItem("triage-lens");
+    if (saved) setLensId(saved);
+  }, []);
+  const activeLens =
+    lenses.find((l) => l.id === lensId) || lenses.find((l) => l.type === "rank") || lenses[0];
+
+  function chooseLens(id) {
+    setLensId(id);
+    window.localStorage.setItem("triage-lens", id);
+  }
+
   const inTab = issues
     .filter((i) => tabOf(i.labels) === tab)
     .sort((a, b) => {
       const band = (a.priority || 9) - (b.priority || 9);
       if (band !== 0) return band;
-      if (a.rank && b.rank) return a.rank.position - b.rank.position;
-      if (a.rank && !b.rank) return -1;
-      if (!a.rank && b.rank) return 1;
-      return new Date(b.createdAt) - new Date(a.createdAt);
+      return compareByLens(a, b, activeLens);
     });
 
   async function act(action, payload) {
@@ -269,23 +335,6 @@ export default function Page() {
           </button>
         </header>
 
-        {viewingTeam && (
-          <div
-            style={{
-              padding: "8px 13px",
-              marginBottom: 14,
-              borderRadius: 4,
-              background: "rgba(242,160,61,.1)",
-              border: `1px solid ${SIGNAL}`,
-              color: SIGNAL,
-              fontSize: 12.5,
-              fontWeight: 600,
-            }}
-          >
-            SANDBOX — viewing team "{viewingTeam}", not your real queue. Remove ?team= from the URL to go back.
-          </div>
-        )}
-
         <nav style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
           {TABS.map((t) => {
             const n = issues.filter((i) => tabOf(i.labels) === t.id).length;
@@ -313,9 +362,34 @@ export default function Page() {
             );
           })}
         </nav>
-        <p style={{ fontSize: 11.5, color: MUTE, margin: "6px 0 16px", paddingLeft: 12 }}>
+        <p style={{ fontSize: 11.5, color: MUTE, margin: "6px 0 12px", paddingLeft: 12 }}>
           {TABS.find((t) => t.id === tab)?.hint}
         </p>
+
+        {tab === "queue" && lenses.length > 1 && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, paddingLeft: 12 }}>
+            <span style={{ fontSize: 10.5, letterSpacing: ".08em", color: MUTE }}>ORDER WITHIN EACH PRIORITY BY</span>
+            <select
+              value={activeLens?.id || ""}
+              onChange={(e) => chooseLens(e.target.value)}
+              style={{
+                background: INK_2,
+                border: `1px solid ${INK_3}`,
+                borderRadius: 3,
+                color: PAPER,
+                fontSize: 12,
+                padding: "4px 8px",
+                fontFamily: "inherit",
+              }}
+            >
+              {lenses.map((l) => (
+                <option key={l.id} value={l.id}>
+                  {l.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
 
         {listErr && (
           <div style={{ padding: 15, borderRadius: 4, background: "rgba(227,100,79,.1)", border: "1px solid rgba(227,100,79,.35)", color: ALERT, fontSize: 13 }}>
