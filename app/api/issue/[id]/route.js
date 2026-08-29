@@ -14,8 +14,9 @@ function parse(issue) {
     breakdown: null,
     rank: null,
     options: [],
-    draft: null,
+    draft: null, // legacy single draft, kept for tickets written before per-option drafts
     draftAt: null,
+    drafts: {}, // { "1": { text, at }, "2": { text, at } } — per-option drafts
     feedback: [],
     thread: [],
   };
@@ -65,11 +66,23 @@ function parse(issue) {
           }));
       }
 
+      // DRAFT <n> is tagged to the option it belongs to, since a ticket can
+      // carry more than one — different options can need different words.
+      // Older tickets may still have a single unnumbered DRAFT from before
+      // this was fixed; keep that as a fallback default.
       if (/^DRAFT/i.test(b)) {
-        // The header may carry a date: "DRAFT (2026-08-18)".
-        out.draft = b.replace(/^DRAFT\s*(\([^)]*\))?\s*:?\s*/i, "").trim();
-        const dated = b.match(/^DRAFT\s*\((\d{4}-\d{2}-\d{2})\)/i);
-        out.draftAt = dated ? dated[1] : c.createdAt;
+        const numbered = b.match(/^DRAFT\s*(\d+)\s*(\([^)]*\))?\s*:?\s*/i);
+        const text = b.replace(/^DRAFT\s*(\d+)?\s*(\([^)]*\))?\s*:?\s*/i, "").trim();
+        const dated = b.match(/^DRAFT\s*(?:\d+\s*)?\((\d{4}-\d{2}-\d{2})\)/i);
+        const at = dated ? dated[1] : c.createdAt;
+        if (numbered) {
+          out.drafts[numbered[1]] = { text, at };
+        } else {
+          // Unnumbered legacy draft — keep as the fallback default, and also
+          // as out.draft directly for any code that hasn't moved to the map.
+          out.draft = text;
+          out.draftAt = at;
+        }
       }
 
       if (/^FEEDBACK:/i.test(b)) {
@@ -110,6 +123,13 @@ function parse(issue) {
   out.awaitingAnswer = out.thread.length > 0 && out.thread[out.thread.length - 1].role === "you";
   if (!out.context) out.context = (issue.description || "").slice(0, 600);
   out.stale = out.draftAt ? Date.now() - new Date(out.draftAt).getTime() > 48 * 3600 * 1000 : false;
+  for (const n of Object.keys(out.drafts)) {
+    out.drafts[n].stale = Date.now() - new Date(out.drafts[n].at).getTime() > 48 * 3600 * 1000;
+  }
+  // No function on this object — it goes through Response.json(), and a
+  // function does not survive JSON serialization. The per-option lookup
+  // (numbered draft, falling back to the legacy single one) happens
+  // client-side in page.js instead, over this same plain data.
   return out;
 }
 
