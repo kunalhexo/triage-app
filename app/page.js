@@ -336,7 +336,11 @@ export default function Page() {
       <div style={{ maxWidth: 1180, margin: "0 auto" }}>
         <header style={{ display: "flex", alignItems: "baseline", gap: 14, marginBottom: 18 }}>
           <h1 style={{ margin: 0, fontSize: 13, letterSpacing: ".28em", fontWeight: 700 }}>TRIAGE</h1>
-          <span style={{ fontSize: 11.5, color: MUTE }}>{loading ? "Reading Linear…" : `${issues.length} open`}</span>
+          <span style={{ fontSize: 11.5, color: MUTE }}>
+            {loading
+              ? "Reading Linear…"
+              : `${issues.filter((i) => ["queue", "unsure", "drops", "proposals"].includes(tabOf(i.labels))).length} open`}
+          </span>
           <button onClick={load} style={{ ...btn("none", MUTE, `1px solid ${INK_3}`), marginLeft: "auto", padding: "5px 12px", fontSize: 11.5 }}>
             Refresh
           </button>
