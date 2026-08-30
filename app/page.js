@@ -195,6 +195,7 @@ export default function Page() {
     setQuestion("");
     setAsking(false);
     setPending(null);
+    setDraft(""); // per-option now, not per-ticket — set correctly when an option is opened, not here
     if (!sel) return;
     const id = sel.id;
     fetch(`/api/issue/${id}`)
@@ -202,7 +203,6 @@ export default function Page() {
       .then((d) => {
         if (openId.current !== id) return; // he moved on
         setDetail(d);
-        setDraft(d.parsed?.draft || "");
       })
       .catch((e) => {
         if (openId.current === id) setDetail({ error: e.message });
@@ -277,7 +277,15 @@ export default function Page() {
     const fresh = await r.json();
     if (openId.current !== id) return null; // a different card is open now
     setDetail(fresh);
-    setDraft(fresh.parsed?.draft || "");
+    // Draft is per-option now, not per-ticket. If an option panel is open,
+    // re-resolve its draft from the fresh data instead of resetting to the
+    // ticket's legacy field — that field belongs to whichever option it
+    // belongs to, not necessarily the one currently open.
+    if (pending) {
+      const fp = fresh.parsed;
+      const fd = fp?.drafts?.[String(pending.n)] || (fp?.draft ? { text: fp.draft } : null);
+      setDraft(fd?.text || "");
+    }
     return fresh;
   }
 
@@ -320,7 +328,6 @@ export default function Page() {
   }
 
   const p = detail?.parsed;
-  const edited = p?.draft && draft.trim() && draft.trim() !== p.draft.trim();
   const accent =
     tab === "proposals" || tab === "unsure" ? COOL : tab === "drops" ? INK_3 : detail?.issue?.priority === 1 ? ALERT : detail?.issue?.priority === 2 ? SIGNAL : LIVE;
 
@@ -595,13 +602,18 @@ export default function Page() {
                     <div style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 5 }}>
                       {p.options.map((o) => {
                         const open = pending?.n === o.n;
+                        // The draft belonging to THIS option — numbered draft
+                        // if 1B wrote one, falling back to the legacy single
+                        // draft for older tickets. Two options never share
+                        // one draft; that was the bug.
+                        const optDraft = p.drafts?.[String(o.n)] || (p.draft ? { text: p.draft, at: p.draftAt, stale: p.stale, legacy: true } : null);
                         return (
                           <div key={o.n}>
                             <button
                               disabled={busy}
                               onClick={() => {
                                 setPending(open ? null : o);
-                                setDraft(p.draft || "");
+                                setDraft(optDraft?.text || "");
                               }}
                               style={{
                                 ...btn(open ? INK_3 : "transparent", o.manual ? MUTE : PAPER, `1px solid ${open ? accent : INK_3}`),
@@ -624,11 +636,12 @@ export default function Page() {
                                     This one is yours to do. Confirming records the choice and closes the
                                     card — it does not do anything on your behalf.
                                   </p>
-                                ) : p.draft ? (
+                                ) : optDraft ? (
                                   <>
                                     <div style={{ fontSize: 9, letterSpacing: ".12em", color: MUTE, fontWeight: 700, marginBottom: 6 }}>
-                                      WORDING {edited && <span style={{ color: SIGNAL }}>· EDITED</span>}
-                                      {p.stale && <span style={{ color: ALERT }}> · OVER 48H OLD</span>}
+                                      WORDING {optDraft.legacy && <span style={{ color: MUTE }}>· SHARED, PRE-FIX</span>}
+                                      {draft.trim() !== (optDraft.text || "").trim() && <span style={{ color: SIGNAL }}> · EDITED</span>}
+                                      {optDraft.stale && <span style={{ color: ALERT }}> · OVER 48H OLD</span>}
                                     </div>
                                     <textarea value={draft} onChange={(e) => setDraft(e.target.value)} rows={5} style={box} />
                                     <p style={{ margin: "7px 0 10px", fontSize: 11.5, color: MUTE, lineHeight: 1.5 }}>
@@ -646,13 +659,14 @@ export default function Page() {
                                   <button
                                     disabled={busy}
                                     onClick={() => {
+                                      const edited = optDraft && draft.trim() !== (optDraft.text || "").trim();
                                       const payload = { n: o.n, draft: edited ? draft : null, text: note };
                                       setPending(null);
                                       act("choose", payload);
                                     }}
                                     style={btn(LIVE, INK)}
                                   >
-                                    {busy ? "Working…" : o.manual ? "Mark done" : p.draft ? "Confirm and prepare" : "Confirm"}
+                                    {busy ? "Working…" : o.manual ? "Mark done" : optDraft ? "Confirm and prepare" : "Confirm"}
                                   </button>
                                   <button disabled={busy} onClick={() => setPending(null)} style={btn("transparent", MUTE, `1px solid ${INK_3}`)}>
                                     Cancel
