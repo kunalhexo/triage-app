@@ -164,6 +164,9 @@ export default function Page() {
   // An option he has clicked but not yet confirmed. The second step lives
   // under it, so the wording being edited is tied to the choice being made.
   const [pending, setPending] = useState(null);
+  // Park-until panel, Queue cards only — open/closed and the chosen date.
+  const [snoozing, setSnoozing] = useState(false);
+  const [snoozeDate, setSnoozeDate] = useState("");
   // Which ticket is open right now. Async work started for one ticket must
   // never write its result into another — switching cards mid-poll is normal.
   const openId = useRef(null);
@@ -195,6 +198,8 @@ export default function Page() {
     setQuestion("");
     setAsking(false);
     setPending(null);
+    setSnoozing(false);
+    setSnoozeDate("");
     setDraft(""); // per-option now, not per-ticket — set correctly when an option is opened, not here
     if (!sel) return;
     const id = sel.id;
@@ -599,6 +604,50 @@ export default function Page() {
                           </button>
                         ))}
                       </div>
+                    </div>
+                  )}
+
+                  {tab === "queue" && (
+                    <div style={{ marginTop: 16 }}>
+                      {!snoozing ? (
+                        <button disabled={busy} onClick={() => setSnoozing(true)} style={btn("transparent", MUTE, `1px solid ${INK_3}`)}>
+                          Park until…
+                        </button>
+                      ) : (
+                        <div style={{ border: `1px solid ${INK_3}`, borderRadius: 4, padding: "12px 13px" }}>
+                          <div style={{ fontSize: 9, letterSpacing: ".12em", color: MUTE, fontWeight: 700, marginBottom: 8 }}>
+                            PARK, THEN BRING BACK ON
+                          </div>
+                          <input
+                            type="date"
+                            value={snoozeDate}
+                            min={new Date().toISOString().slice(0, 10)}
+                            onChange={(e) => setSnoozeDate(e.target.value)}
+                            style={{ ...box, width: "auto", marginBottom: 10 }}
+                          />
+                          <p style={{ margin: "0 0 10px", fontSize: 11.5, color: MUTE, lineHeight: 1.5 }}>
+                            It leaves the queue now and comes back on its own, on this date — you
+                            don't have to remember to look for it.
+                          </p>
+                          <div style={{ display: "flex", gap: 6 }}>
+                            <button
+                              disabled={busy || !snoozeDate}
+                              onClick={() => {
+                                const wasBucket = ["for-me", "delegate", "autonomous"].find((b) => detail?.issue?.labels?.includes(b)) || "for-me";
+                                setSnoozing(false);
+                                setPending(null); // a stale options panel shouldn't sit open on a ticket that's about to leave the queue
+                                act("snooze", { snoozeDate, wasBucket, text: note });
+                              }}
+                              style={btn(LIVE, INK)}
+                            >
+                              {busy ? "Working…" : "Park"}
+                            </button>
+                            <button disabled={busy} onClick={() => { setSnoozing(false); setSnoozeDate(""); }} style={btn("transparent", MUTE, `1px solid ${INK_3}`)}>
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
 
