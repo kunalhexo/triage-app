@@ -161,14 +161,10 @@ export default function Page() {
   const [magicText, setMagicText] = useState("");
   const [magicBusy, setMagicBusy] = useState(false);
   const [magicAck, setMagicAck] = useState(null); // { text, shape } — shown immediately, before the thread refresh lands
-  const [question, setQuestion] = useState("");
   const [asking, setAsking] = useState(false);
   // An option he has clicked but not yet confirmed. The second step lives
   // under it, so the wording being edited is tied to the choice being made.
   const [pending, setPending] = useState(null);
-  // Park-until panel, Queue cards only — open/closed and the chosen date.
-  const [snoozing, setSnoozing] = useState(false);
-  const [snoozeDate, setSnoozeDate] = useState("");
   // Which ticket is open right now. Async work started for one ticket must
   // never write its result into another — switching cards mid-poll is normal.
   const openId = useRef(null);
@@ -196,11 +192,8 @@ export default function Page() {
     openId.current = sel?.id || null;
     setDetail(null);
     setMsg(null);
-    setQuestion("");
     setAsking(false);
     setPending(null);
-    setSnoozing(false);
-    setSnoozeDate("");
     setMagicText("");
     setMagicAck(null);
     setDraft(""); // per-option now, not per-ticket — set correctly when an option is opened, not here
@@ -330,6 +323,15 @@ export default function Page() {
         setPending({ n, text: "" });
         setDraft(d?.text || "");
       }
+      if (result.shape === "needs_research") {
+        // This is the actual fold-in of "Tell me more" into this one box —
+        // a genuine question hands off to the real ask()/Routine 5 flow
+        // instead of pointing at a separate button. Same polling UI that
+        // already existed, just reached from here instead of its own entry
+        // point.
+        setMagicAck(null);
+        ask(text);
+      }
     } catch (e) {
       setMagicAck({ text: `Couldn't process that: ${e.message}`, shape: "error" });
     } finally {
@@ -352,7 +354,6 @@ export default function Page() {
       });
       const d = await r.json();
       if (d.error) throw new Error(d.error);
-      setQuestion("");
       await refreshDetail(id);
 
       if (!d.pending) {
@@ -543,86 +544,65 @@ export default function Page() {
                     <p style={{ margin: "14px 0 0", fontSize: 13, lineHeight: 1.6, color: "#B9C6D2", whiteSpace: "pre-wrap" }}>{p.context}</p>
                   )}
 
-                  {/* Tell me more — answered by Routine 5, which has the tool
-                      access this app does not. */}
-                  <div style={{ marginTop: 16 }}>
-                    {p?.thread?.length > 0 && (
-                      <div style={{ marginBottom: 12 }}>
-                        {p.thread.map((t, k) => (
-                          <div key={k} style={{ marginBottom: 10 }}>
-                            <div style={{ fontSize: 9, letterSpacing: ".12em", color: t.role === "you" ? SIGNAL : COOL, fontWeight: 700, marginBottom: 4 }}>
-                              {t.role === "you" ? "YOU ASKED" : "ANSWER"}
+                  {/* Q&A history from Routine 5 — still shown here, but with
+                      no entry point of its own anymore. Every question,
+                      first or a follow-up, now goes through the one magic
+                      box below. Typing a question into it and getting
+                      routed here via needs_research is the actual fold-in
+                      of what used to be a separate "Tell me more" button. */}
+                  {(p?.thread?.length > 0 || asking) && (
+                    <div style={{ marginTop: 16 }}>
+                      {p?.thread?.length > 0 && (
+                        <div style={{ marginBottom: 12 }}>
+                          {p.thread.map((t, k) => (
+                            <div key={k} style={{ marginBottom: 10 }}>
+                              <div style={{ fontSize: 9, letterSpacing: ".12em", color: t.role === "you" ? SIGNAL : COOL, fontWeight: 700, marginBottom: 4 }}>
+                                {t.role === "you" ? "YOU ASKED" : "ANSWER"}
+                              </div>
+                              <p style={{ margin: 0, fontSize: 13, lineHeight: 1.6, color: t.role === "you" ? MUTE : PAPER, whiteSpace: "pre-wrap" }}>
+                                {t.body || "What is this about, and does it matter to me?"}
+                              </p>
+                              {t.sources?.length > 0 && (
+                                <details style={{ marginTop: 6 }}>
+                                  <summary style={{ cursor: "pointer", color: MUTE, fontSize: 11 }}>
+                                    Where this came from ({t.sources.length})
+                                  </summary>
+                                  <ul style={{ margin: "6px 0 0", paddingLeft: 18, color: MUTE, fontSize: 11.5, lineHeight: 1.6 }}>
+                                    {t.sources.map((sc, j) => (
+                                      <li key={j}>{sc}</li>
+                                    ))}
+                                  </ul>
+                                </details>
+                              )}
                             </div>
-                            <p style={{ margin: 0, fontSize: 13, lineHeight: 1.6, color: t.role === "you" ? MUTE : PAPER, whiteSpace: "pre-wrap" }}>
-                              {t.body || "What is this about, and does it matter to me?"}
-                            </p>
-                            {t.sources?.length > 0 && (
-                              <details style={{ marginTop: 6 }}>
-                                <summary style={{ cursor: "pointer", color: MUTE, fontSize: 11 }}>
-                                  Where this came from ({t.sources.length})
-                                </summary>
-                                <ul style={{ margin: "6px 0 0", paddingLeft: 18, color: MUTE, fontSize: 11.5, lineHeight: 1.6 }}>
-                                  {t.sources.map((sc, j) => (
-                                    <li key={j}>{sc}</li>
-                                  ))}
-                                </ul>
-                              </details>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {asking && (
-                      <p style={{ fontSize: 12.5, color: COOL, margin: "0 0 10px" }}>Looking into it…</p>
-                    )}
-
-                    {/* A question with no answer after a few minutes means the
-                        explain routine dropped it. Say so and offer a retry
-                        rather than leaving it silently unanswered. */}
-                    {!asking &&
-                      p?.awaitingAnswer &&
-                      Date.now() - new Date(p.thread[p.thread.length - 1].at).getTime() > 5 * 60 * 1000 && (
-                        <div style={{ marginBottom: 10 }}>
-                          <p style={{ fontSize: 12.5, color: ALERT, margin: "0 0 6px" }}>
-                            That question never got answered.
-                          </p>
-                          <button
-                            onClick={() => ask(p.thread[p.thread.length - 1].body)}
-                            style={btn("transparent", COOL, `1px solid ${COOL}`)}
-                          >
-                            Ask again
-                          </button>
+                          ))}
                         </div>
                       )}
 
-                    {!p?.thread?.length && !asking && (
-                      <button onClick={() => ask("")} style={btn("transparent", COOL, `1px solid ${COOL}`)}>
-                        Tell me more
-                      </button>
-                    )}
+                      {asking && <p style={{ fontSize: 12.5, color: COOL, margin: "0 0 10px" }}>Looking into it…</p>}
 
-                    {p?.thread?.length > 0 && !asking && (
-                      <div style={{ display: "flex", gap: 6 }}>
-                        <input
-                          value={question}
-                          onChange={(e) => setQuestion(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter" && question.trim()) ask(question);
-                          }}
-                          placeholder="Ask a follow-up…"
-                          style={{ ...box, flex: 1, padding: "8px 10px" }}
-                        />
-                        <button
-                          disabled={!question.trim()}
-                          onClick={() => ask(question)}
-                          style={btn("transparent", question.trim() ? COOL : INK_3, `1px solid ${question.trim() ? COOL : INK_3}`)}
-                        >
-                          Ask
-                        </button>
-                      </div>
-                    )}
-                  </div>
+                      {/* A question with no answer after a few minutes means the
+                          explain routine dropped it. Say so and offer a retry —
+                          this is the one piece of standalone UI kept, since a
+                          silently dropped question is a real problem the box
+                          itself can't surface on its own. */}
+                      {!asking &&
+                        p?.awaitingAnswer &&
+                        Date.now() - new Date(p.thread[p.thread.length - 1].at).getTime() > 5 * 60 * 1000 && (
+                          <div>
+                            <p style={{ fontSize: 12.5, color: ALERT, margin: "0 0 6px" }}>
+                              That question never got answered.
+                            </p>
+                            <button
+                              onClick={() => ask(p.thread[p.thread.length - 1].body)}
+                              style={btn("transparent", COOL, `1px solid ${COOL}`)}
+                            >
+                              Ask again
+                            </button>
+                          </div>
+                        )}
+                    </div>
+                  )}
 
                   {tab === "proposals" && (
                     <div style={{ display: "flex", gap: 6, marginTop: 16 }}>
@@ -650,49 +630,13 @@ export default function Page() {
                     </div>
                   )}
 
-                  {tab === "queue" && (
-                    <div style={{ marginTop: 16 }}>
-                      {!snoozing ? (
-                        <button disabled={busy} onClick={() => setSnoozing(true)} style={btn("transparent", MUTE, `1px solid ${INK_3}`)}>
-                          Park until…
-                        </button>
-                      ) : (
-                        <div style={{ border: `1px solid ${INK_3}`, borderRadius: 4, padding: "12px 13px" }}>
-                          <div style={{ fontSize: 9, letterSpacing: ".12em", color: MUTE, fontWeight: 700, marginBottom: 8 }}>
-                            PARK, THEN BRING BACK ON
-                          </div>
-                          <input
-                            type="date"
-                            value={snoozeDate}
-                            min={new Date().toISOString().slice(0, 10)}
-                            onChange={(e) => setSnoozeDate(e.target.value)}
-                            style={{ ...box, width: "auto", marginBottom: 10 }}
-                          />
-                          <p style={{ margin: "0 0 10px", fontSize: 11.5, color: MUTE, lineHeight: 1.5 }}>
-                            It leaves the queue now and comes back on its own, on this date — you
-                            don't have to remember to look for it.
-                          </p>
-                          <div style={{ display: "flex", gap: 6 }}>
-                            <button
-                              disabled={busy || !snoozeDate}
-                              onClick={() => {
-                                const wasBucket = ["for-me", "delegate", "autonomous"].find((b) => detail?.issue?.labels?.includes(b)) || "for-me";
-                                setSnoozing(false);
-                                setPending(null); // a stale options panel shouldn't sit open on a ticket that's about to leave the queue
-                                act("snooze", { snoozeDate, wasBucket });
-                              }}
-                              style={btn(LIVE, INK)}
-                            >
-                              {busy ? "Working…" : "Park"}
-                            </button>
-                            <button disabled={busy} onClick={() => { setSnoozing(false); setSnoozeDate(""); }} style={btn("transparent", MUTE, `1px solid ${INK_3}`)}>
-                              Cancel
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
+                  {/* The standalone "Park until…" button used to live here.
+                      Removed — "park this until Monday" or "remind me next
+                      week" typed into the magic box now routes through its
+                      quiet shape, which resolves the date and snoozes the
+                      same way this button used to, using the exact same
+                      snooze action underneath. */}
+
 
                   {tab !== "proposals" && tab !== "drops" && tab !== "unsure" && p?.options?.length > 0 && (
                     <div style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 5 }}>

@@ -50,10 +50,13 @@ export async function POST(req) {
     const issue = await getIssue(issueId);
     if (!issue) return Response.json({ error: "Issue not found." }, { status: 404 });
 
-    // Always record what was actually typed, first, regardless of what
-    // happens next — this is the same FEEDBACK: the plain note box always
-    // wrote, so Routine 4 reads it exactly as it always has.
-    await addComment(issueId, `FEEDBACK: ${text.trim()}`);
+    // What was actually typed gets recorded as a FEEDBACK: comment — the
+    // same one the plain note box always wrote, so Routine 4 reads it
+    // exactly as it always has. Written after classification, not before —
+    // a genuine question shouldn't get a FEEDBACK: line at all, since the
+    // real ask()/Routine 5 flow writes its own ASK: comment with the same
+    // text, and having both would duplicate the same input under two
+    // different, confusing labels.
 
     // Both scans go oldest-to-newest and let a later match overwrite an
     // earlier one — the same pattern extractRankAndScore already uses. Not
@@ -76,13 +79,30 @@ export async function POST(req) {
       }
     }
     const options = parseOptions(issue.comments);
-    const entities = await getEntities();
+    // Entities is an enhancement to classification (resolving who "Tehreem"
+    // is), not a hard requirement for every interaction — "this is already
+    // resolved" needs none of it. A Notion hiccup here shouldn't kill an
+    // interaction that never needed Entities in the first place. This was a
+    // real bug: getEntities() was called unwrapped, so any failure — a
+    // sharing lapse, a renamed database — took down the whole magic box.
+    let entities = [];
+    let entitiesError = null;
+    try {
+      entities = await getEntities();
+    } catch (e) {
+      entitiesError = e.message;
+    }
 
     const result = await classify({
       ticket: { title: issue.title, context: contextText, breakdown, options },
       entities,
+      entitiesError,
       userText: text.trim(),
     });
+
+    if (result.shape !== "needs_research") {
+      await addComment(issueId, `FEEDBACK: ${text.trim()}`);
+    }
 
     const today = new Date().toISOString().slice(0, 10);
 
@@ -176,12 +196,12 @@ export async function POST(req) {
       return Response.json({ ok: true, shape: "resolution", acknowledgment: result.acknowledgment, followUp });
     }
 
-    // needs_research — v1 is honest about not having a research handoff yet
-    // rather than silently building one under pressure.
-    await addComment(
-      issueId,
-      `HELD: This needs more digging than I can do from here — try "Tell me more" first, or give me a bit more detail.`
-    );
+    // needs_research — this used to write a HELD: comment telling Kunal to
+    // go use "Tell me more" separately. That was the actual bug he caught:
+    // "Tell me more" was supposed to fold into this box, not remain a
+    // second thing to reach for. Now it writes nothing itself — the client
+    // sees this shape and calls the existing ask()/Routine 5 flow directly,
+    // which writes its own ASK: comment. One box, one path, not two.
     return Response.json({ ok: true, shape: "needs_research", acknowledgment: result.acknowledgment });
   } catch (e) {
     return Response.json({ error: e.message }, { status: 500 });
