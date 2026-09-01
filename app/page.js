@@ -158,7 +158,9 @@ export default function Page() {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
   const [draft, setDraft] = useState("");
-  const [note, setNote] = useState("");
+  const [magicText, setMagicText] = useState("");
+  const [magicBusy, setMagicBusy] = useState(false);
+  const [magicAck, setMagicAck] = useState(null); // { text, shape } — shown immediately, before the thread refresh lands
   const [question, setQuestion] = useState("");
   const [asking, setAsking] = useState(false);
   // An option he has clicked but not yet confirmed. The second step lives
@@ -194,12 +196,13 @@ export default function Page() {
     openId.current = sel?.id || null;
     setDetail(null);
     setMsg(null);
-    setNote("");
     setQuestion("");
     setAsking(false);
     setPending(null);
     setSnoozing(false);
     setSnoozeDate("");
+    setMagicText("");
+    setMagicAck(null);
     setDraft(""); // per-option now, not per-ticket — set correctly when an option is opened, not here
     if (!sel) return;
     const id = sel.id;
@@ -266,7 +269,6 @@ export default function Page() {
       const d = await r.json();
       if (d.error) throw new Error(d.error);
       setMsg({ ok: true, text: d.message });
-      setNote("");
       load();
       // Re-read the open issue so labels and comments on screen match Linear.
       refreshDetail(sel.id).catch(() => {});
@@ -292,6 +294,47 @@ export default function Page() {
       setDraft(fd?.text || "");
     }
     return fresh;
+  }
+
+  /* The magic box. Classify-then-execute already happened server-side by
+     the time this returns — this just shows the result and, for a new
+     option, lands straight on its editable draft rather than making a
+     second click find it. */
+  async function submitMagic() {
+    const text = magicText.trim();
+    if (!text || !sel) return;
+    setMagicText("");
+    setMagicBusy(true);
+    setMagicAck(null);
+    try {
+      const r = await fetch("/api/magic", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ issueId: sel.id, text }),
+      });
+      const result = await r.json();
+      if (result.error) throw new Error(result.error);
+      setMagicAck({ text: result.acknowledgment, shape: result.shape });
+      const fresh = await refreshDetail(sel.id);
+      await load(); // labels may have changed (buddy-added-option, buddy-parked, buddy-done)
+
+      if (result.shape === "new_option" && fresh?.parsed) {
+        const n = result.newOptionNumber;
+        const d = fresh.parsed.drafts?.[String(n)];
+        setPending({ n, text: "" });
+        setDraft(d?.text || "");
+      }
+      if (result.shape === "modifier" && fresh?.parsed) {
+        const n = result.modifiedOptionNumber;
+        const d = fresh.parsed.drafts?.[String(n)];
+        setPending({ n, text: "" });
+        setDraft(d?.text || "");
+      }
+    } catch (e) {
+      setMagicAck({ text: `Couldn't process that: ${e.message}`, shape: "error" });
+    } finally {
+      setMagicBusy(false);
+    }
   }
 
   /* Questions are answered by Routine 5, not by this app, so after asking we
@@ -599,7 +642,7 @@ export default function Page() {
                       </div>
                       <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                         {BUCKETS.map((b) => (
-                          <button key={b.id} disabled={busy} onClick={() => act("bucket", { bucket: b.id, text: note })} style={btn("transparent", b.id === "keep-dropped" ? MUTE : b.color, `1px solid ${b.color}`)}>
+                          <button key={b.id} disabled={busy} onClick={() => act("bucket", { bucket: b.id })} style={btn("transparent", b.id === "keep-dropped" ? MUTE : b.color, `1px solid ${b.color}`)}>
                             {b.label}
                           </button>
                         ))}
@@ -636,7 +679,7 @@ export default function Page() {
                                 const wasBucket = ["for-me", "delegate", "autonomous"].find((b) => detail?.issue?.labels?.includes(b)) || "for-me";
                                 setSnoozing(false);
                                 setPending(null); // a stale options panel shouldn't sit open on a ticket that's about to leave the queue
-                                act("snooze", { snoozeDate, wasBucket, text: note });
+                                act("snooze", { snoozeDate, wasBucket });
                               }}
                               style={btn(LIVE, INK)}
                             >
@@ -713,7 +756,7 @@ export default function Page() {
                                     disabled={busy}
                                     onClick={() => {
                                       const edited = optDraft && draft.trim() !== (optDraft.text || "").trim();
-                                      const payload = { n: o.n, draft: edited ? draft : null, text: note };
+                                      const payload = { n: o.n, draft: edited ? draft : null };
                                       setPending(null);
                                       act("choose", payload);
                                     }}
@@ -734,45 +777,60 @@ export default function Page() {
                   )}
 
                   <div style={{ marginTop: 16, borderTop: `1px solid ${INK_3}`, paddingTop: 13 }}>
-                    <div style={{ fontSize: 9, letterSpacing: ".12em", color: MUTE, fontWeight: 700, marginBottom: 6 }}>YOUR NOTE</div>
-                    <textarea
-                      value={note}
-                      onChange={(e) => setNote(e.target.value)}
-                      rows={2}
-                      placeholder="Why this is wrong, or what you'd rather it did. This teaches the system — it does not send anything."
-                      style={box}
-                    />
-                    {/^\s*(reply|send|say|tell)\b/i.test(note) && (
-                      <p style={{ fontSize: 11.5, color: SIGNAL, lineHeight: 1.5, margin: "7px 0 0" }}>
-                        This looks like wording you want sent. Notes teach the system, they do not
-                        send. To send it, edit the DRAFT above and press an option.
+                    <div style={{ fontSize: 9, letterSpacing: ".12em", color: MUTE, fontWeight: 700, marginBottom: 8 }}>
+                      TYPE ANYTHING — DELEGATE, REPLY, A NOTE, A QUESTION
+                    </div>
+
+                    {p?.magicThread?.length > 0 && (
+                      <div style={{ marginBottom: 12, display: "flex", flexDirection: "column", gap: 7 }}>
+                        {p.magicThread.map((m, i) => {
+                          const style = {
+                            you: { label: "YOU", color: MUTE },
+                            question: { label: "ASKING YOU", color: SIGNAL },
+                            resolved: { label: "RESOLVED", color: LIVE },
+                            snoozed: { label: "PARKED", color: MUTE },
+                          }[m.kind] || { label: m.kind.toUpperCase(), color: MUTE };
+                          return (
+                            <div key={i} style={{ fontSize: 12, lineHeight: 1.55 }}>
+                              <span style={{ fontSize: 9, letterSpacing: ".08em", color: style.color, fontWeight: 700, marginRight: 6 }}>
+                                {style.label}
+                              </span>
+                              <span style={{ color: m.kind === "question" ? PAPER : "#B9C6D2" }}>{m.body}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {magicAck && (
+                      <p
+                        style={{
+                          fontSize: 12,
+                          color: magicAck.shape === "error" ? ALERT : SIGNAL,
+                          lineHeight: 1.5,
+                          margin: "0 0 8px",
+                        }}
+                      >
+                        {magicAck.text}
                       </p>
                     )}
-                    {note.trim() && (
-                      <button
-                        disabled={busy}
-                        onClick={() => {
-                          const text = note.trim();
-                          setNote(""); // clear first, so a second click has nothing to send
-                          act("note", { text });
-                        }}
-                        style={{ ...btn(SIGNAL, INK), marginTop: 7, fontWeight: 700, opacity: busy ? 0.5 : 1 }}
-                      >
-                        {busy ? "Saving…" : "Save note"}
+
+                    <textarea
+                      value={magicText}
+                      onChange={(e) => setMagicText(e.target.value)}
+                      rows={2}
+                      placeholder='"Delegate this to Tehreem" · "Already handled, he replied on WhatsApp" · "Remind me in a week"'
+                      style={box}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) submitMagic();
+                      }}
+                    />
+                    {magicText.trim() && (
+                      <button disabled={magicBusy} onClick={submitMagic} style={{ ...btn(SIGNAL, INK), marginTop: 7, fontWeight: 700, opacity: magicBusy ? 0.5 : 1 }}>
+                        {magicBusy ? "Working…" : "Send"}
                       </button>
                     )}
                   </div>
-
-                  {p?.feedback?.length > 0 && (
-                    <div style={{ marginTop: 14 }}>
-                      <div style={{ fontSize: 9, letterSpacing: ".12em", color: MUTE, fontWeight: 700, marginBottom: 6 }}>EARLIER NOTES</div>
-                      {p.feedback.map((f, k) => (
-                        <p key={k} style={{ fontSize: 12, color: MUTE, lineHeight: 1.5, margin: "0 0 6px" }}>
-                          {f.body}
-                        </p>
-                      ))}
-                    </div>
-                  )}
 
                   {msg && (
                     <div
