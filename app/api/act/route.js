@@ -34,28 +34,13 @@ export async function POST(req) {
       return Response.json({ ok: true, message: "Note saved. Routine 4 turns it into a rule tonight." });
     }
 
-    if (action === "snooze") {
-      // Distinct from "bucket" deliberately — this isn't a correction (the
-      // bucket wasn't wrong), it's a deliberate defer. Keeping it a separate
-      // action means this addition can't change anything about the existing
-      // Unsure/Drops correction flow, which stays exactly as it was.
-      const snoozeDate = payload.snoozeDate;
-      const wasBucket = payload.wasBucket;
-      if (!snoozeDate) return Response.json({ error: "snoozeDate is required" }, { status: 400 });
-      if (!["for-me", "delegate", "autonomous"].includes(wasBucket)) {
-        return Response.json({ error: `Invalid wasBucket "${wasBucket}"` }, { status: 400 });
-      }
-      await setLabels(issue.id, keepIds, ["park", "buddy-parked"]);
-      await addComment(
-        issue.id,
-        `FEEDBACK: Parking until ${snoozeDate}.${payload.text ? `\n\n${payload.text}` : ""}`
-      );
-      // Separate comment, on purpose — SNOOZE: needs to be unambiguously its
-      // own marker for 1B's Step 2D to find, not folded into the FEEDBACK
-      // text where it would need extra parsing to isolate.
-      await addComment(issue.id, `SNOOZE: ${snoozeDate} | was: ${wasBucket}`);
-      return Response.json({ ok: true, message: `Parked until ${snoozeDate}.` });
-    }
+    // The "snooze" action used to live here, called by a standalone
+    // "Park until…" button. That button was folded into the magic box —
+    // "park this until Monday" typed there now hits its quiet shape, which
+    // does its own direct Linear writes in app/api/magic/route.js rather
+    // than routing through this action. Removed rather than left as dead,
+    // unreachable code, since that's exactly the kind of leftover that's
+    // caused real confusion in this codebase before.
 
     if (action === "bucket") {
       const b = payload.bucket;
