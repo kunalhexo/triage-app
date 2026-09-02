@@ -377,6 +377,35 @@ export default function Page() {
   }
 
   const p = detail?.parsed;
+  // One real timeline, not two stacked blocks. This is the actual fix for
+  // "the order on screen doesn't match when things happened" — p.thread
+  // (Q&A) and p.magicThread (everything else) used to render as two
+  // separate, fixed-position sections regardless of real timestamps. No
+  // overlap between the two sources to worry about: a genuine question
+  // only ever lands in p.thread, since needs_research deliberately skips
+  // writing to p.magicThread — see the magic route.
+  const history = useMemo(() => {
+    const rows = [];
+    for (const t of p?.thread || []) {
+      rows.push({
+        at: t.at,
+        label: t.role === "you" ? "YOU ASKED" : "ANSWER",
+        color: t.role === "you" ? SIGNAL : COOL,
+        body: t.body || "What is this about, and does it matter to me?",
+        sources: t.sources,
+      });
+    }
+    for (const m of p?.magicThread || []) {
+      const style = {
+        you: { label: "YOU", color: MUTE },
+        question: { label: "ASKING YOU", color: SIGNAL },
+        resolved: { label: "RESOLVED", color: LIVE },
+        snoozed: { label: "PARKED", color: MUTE },
+      }[m.kind] || { label: m.kind.toUpperCase(), color: MUTE };
+      rows.push({ at: m.at, label: style.label, color: style.color, body: m.body });
+    }
+    return rows.sort((a, b) => new Date(a.at) - new Date(b.at));
+  }, [p?.thread, p?.magicThread]);
   const accent =
     tab === "proposals" || tab === "unsure" ? COOL : tab === "drops" ? INK_3 : detail?.issue?.priority === 1 ? ALERT : detail?.issue?.priority === 2 ? SIGNAL : LIVE;
 
@@ -544,66 +573,6 @@ export default function Page() {
                     <p style={{ margin: "14px 0 0", fontSize: 13, lineHeight: 1.6, color: "#B9C6D2", whiteSpace: "pre-wrap" }}>{p.context}</p>
                   )}
 
-                  {/* Q&A history from Routine 5 — still shown here, but with
-                      no entry point of its own anymore. Every question,
-                      first or a follow-up, now goes through the one magic
-                      box below. Typing a question into it and getting
-                      routed here via needs_research is the actual fold-in
-                      of what used to be a separate "Tell me more" button. */}
-                  {(p?.thread?.length > 0 || asking) && (
-                    <div style={{ marginTop: 16 }}>
-                      {p?.thread?.length > 0 && (
-                        <div style={{ marginBottom: 12 }}>
-                          {p.thread.map((t, k) => (
-                            <div key={k} style={{ marginBottom: 10 }}>
-                              <div style={{ fontSize: 9, letterSpacing: ".12em", color: t.role === "you" ? SIGNAL : COOL, fontWeight: 700, marginBottom: 4 }}>
-                                {t.role === "you" ? "YOU ASKED" : "ANSWER"}
-                              </div>
-                              <p style={{ margin: 0, fontSize: 13, lineHeight: 1.6, color: t.role === "you" ? MUTE : PAPER, whiteSpace: "pre-wrap" }}>
-                                {t.body || "What is this about, and does it matter to me?"}
-                              </p>
-                              {t.sources?.length > 0 && (
-                                <details style={{ marginTop: 6 }}>
-                                  <summary style={{ cursor: "pointer", color: MUTE, fontSize: 11 }}>
-                                    Where this came from ({t.sources.length})
-                                  </summary>
-                                  <ul style={{ margin: "6px 0 0", paddingLeft: 18, color: MUTE, fontSize: 11.5, lineHeight: 1.6 }}>
-                                    {t.sources.map((sc, j) => (
-                                      <li key={j}>{sc}</li>
-                                    ))}
-                                  </ul>
-                                </details>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-
-                      {asking && <p style={{ fontSize: 12.5, color: COOL, margin: "0 0 10px" }}>Looking into it…</p>}
-
-                      {/* A question with no answer after a few minutes means the
-                          explain routine dropped it. Say so and offer a retry —
-                          this is the one piece of standalone UI kept, since a
-                          silently dropped question is a real problem the box
-                          itself can't surface on its own. */}
-                      {!asking &&
-                        p?.awaitingAnswer &&
-                        Date.now() - new Date(p.thread[p.thread.length - 1].at).getTime() > 5 * 60 * 1000 && (
-                          <div>
-                            <p style={{ fontSize: 12.5, color: ALERT, margin: "0 0 6px" }}>
-                              That question never got answered.
-                            </p>
-                            <button
-                              onClick={() => ask(p.thread[p.thread.length - 1].body)}
-                              style={btn("transparent", COOL, `1px solid ${COOL}`)}
-                            >
-                              Ask again
-                            </button>
-                          </div>
-                        )}
-                    </div>
-                  )}
-
                   {tab === "proposals" && (
                     <div style={{ display: "flex", gap: 6, marginTop: 16 }}>
                       <button disabled={busy} onClick={() => act("proposal", { approve: true })} style={btn(LIVE, INK)}>
@@ -725,26 +694,62 @@ export default function Page() {
                       TYPE ANYTHING — DELEGATE, REPLY, A NOTE, A QUESTION
                     </div>
 
-                    {p?.magicThread?.length > 0 && (
-                      <div style={{ marginBottom: 12, display: "flex", flexDirection: "column", gap: 7 }}>
-                        {p.magicThread.map((m, i) => {
-                          const style = {
-                            you: { label: "YOU", color: MUTE },
-                            question: { label: "ASKING YOU", color: SIGNAL },
-                            resolved: { label: "RESOLVED", color: LIVE },
-                            snoozed: { label: "PARKED", color: MUTE },
-                          }[m.kind] || { label: m.kind.toUpperCase(), color: MUTE };
-                          return (
-                            <div key={i} style={{ fontSize: 12, lineHeight: 1.55 }}>
-                              <span style={{ fontSize: 9, letterSpacing: ".08em", color: style.color, fontWeight: 700, marginRight: 6 }}>
-                                {style.label}
-                              </span>
-                              <span style={{ color: m.kind === "question" ? PAPER : "#B9C6D2" }}>{m.body}</span>
-                            </div>
-                          );
-                        })}
+                    {/* One real timeline — everything that's happened on
+                        this ticket, in the order it actually happened.
+                        Sources (for a Routine 5 answer) render as a
+                        collapsible detail on that specific row, same as
+                        before, just no longer split into a separate block
+                        rendered elsewhere on the page. */}
+                    {history.length > 0 && (
+                      <div style={{ marginBottom: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+                        {history.map((row, i) => (
+                          <div key={i} style={{ fontSize: 12, lineHeight: 1.55 }}>
+                            <span style={{ fontSize: 9, letterSpacing: ".08em", color: row.color, fontWeight: 700, marginRight: 6 }}>
+                              {row.label}
+                            </span>
+                            <span style={{ color: row.label === "ASKING YOU" || row.label === "ANSWER" ? PAPER : "#B9C6D2", whiteSpace: "pre-wrap" }}>
+                              {row.body}
+                            </span>
+                            {row.sources?.length > 0 && (
+                              <details style={{ marginTop: 4 }}>
+                                <summary style={{ cursor: "pointer", color: MUTE, fontSize: 11 }}>
+                                  Where this came from ({row.sources.length})
+                                </summary>
+                                <ul style={{ margin: "6px 0 0", paddingLeft: 18, color: MUTE, fontSize: 11.5, lineHeight: 1.6 }}>
+                                  {row.sources.map((sc, j) => (
+                                    <li key={j}>{sc}</li>
+                                  ))}
+                                </ul>
+                              </details>
+                            )}
+                          </div>
+                        ))}
                       </div>
                     )}
+
+                    {asking && <p style={{ fontSize: 12.5, color: COOL, margin: "0 0 10px" }}>Looking into it…</p>}
+
+                    {/* A question with no answer after a few minutes means the
+                        explain routine dropped it — the one piece of
+                        standalone retry UI kept, since a silently dropped
+                        question is a real problem the timeline alone can't
+                        surface. */}
+                    {!asking &&
+                      p?.awaitingAnswer &&
+                      p?.thread?.length > 0 &&
+                      Date.now() - new Date(p.thread[p.thread.length - 1].at).getTime() > 5 * 60 * 1000 && (
+                        <div style={{ marginBottom: 10 }}>
+                          <p style={{ fontSize: 12.5, color: ALERT, margin: "0 0 6px" }}>
+                            That question never got answered.
+                          </p>
+                          <button
+                            onClick={() => ask(p.thread[p.thread.length - 1].body)}
+                            style={btn("transparent", COOL, `1px solid ${COOL}`)}
+                          >
+                            Ask again
+                          </button>
+                        </div>
+                      )}
 
                     {magicAck && (
                       <p
